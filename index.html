@@ -292,7 +292,7 @@ fetch('data/matched.geojson')
       'Calles y avenidas': streetLayer,
       'Plazas y parques': parkLayer,
       'Barrios': barrioLayer
-    }, { collapsed: true, position: 'topright' }).addTo(map);
+    }, { collapsed: true, position: 'bottomright' }).addTo(map);
 
     document.getElementById('stats').textContent =
       `${data.features.length.toLocaleString('es-AR')} lugares con historia`;
