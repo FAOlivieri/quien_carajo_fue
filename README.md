@@ -71,19 +71,33 @@ Three scripts, run in order, each reading/writing files under `data/`:
    book's own name or its biography text contradicts the one OSM feature
    that carries that surname), producing `data/matched.geojson` and
    `data/unmatched.csv`. A single row can produce more than one map feature
-   when its types span more than one physical thing (e.g. "CHACABUCO" is
-   both a calle and the parque that lends its name to the barrio, and a
-   bare `paseo` is tried against both the street and park layers since the
-   book uses it for both paved promenades and green ones) - both get drawn,
-   sharing the one origin story. Current match rate: **~91%** (2,591
-   features from 2,724 geocodable rows - the rest are largely small/obscure
-   `plazoleta`s, traffic-median `cantero central`s, and a few names that
-   plainly aren't in OSM under any spelling I could find, like the
-   `Rosales` avenue). One thing deliberately **not** done: fuzzy-matching a
-   surname by character similarity (to catch spelling variants like
-   "Riccheri"/"Ricchieri") - tested it, and it also happily matches
-   "Córdoba"/"Córdova" and "Romero"/"Rovero", which are not the same
-   people. Reverted; a few more unmatched rows is a better trade than
+   when its types span more than one physical thing - e.g. "CHACABUCO" is
+   both a calle and the parque that lends its name to the barrio, and
+   "THAYS, CARLOS (jardín botánico; parque)" covers two *different* real
+   parks (Jardín Botánico Carlos Thays and Parque Carlos Thays are
+   separate OSM features, several km apart) - each type is matched with
+   its own type-specific candidate so it can't just keep re-finding
+   whichever one a generic search hits first, and results are only merged
+   back down when two types genuinely resolve to the same feature (e.g.
+   "calle; avenida" naming one street two ways). Current match rate:
+   **~91%** (2,587 features from 2,724 geocodable rows - the rest are
+   largely small/obscure `plazoleta`s, traffic-median `cantero central`s,
+   and a few names that plainly aren't in OSM under any spelling I could
+   find, like the `Rosales` avenue or the `Plaza Mariano Saavedra`). One
+   more deliberate correctness-over-recall trade: a bare surname is never
+   allowed to win a match - exact *or* fuzzy - when the book actually gives
+   a first name, even if the OSM name it's being compared to has none of
+   its own to contradict it with. "Saavedra, Mariano" used to silently grab
+   "Parque Saavedra" this way (it cleans down to the bare surname alone,
+   with no given name to check against) - which is actually Cornelio de
+   Saavedra's park (his father, and a separate, correctly-matched book
+   entry), not Mariano's. Mariano's plaza isn't in OSM under any name I
+   could find, so this entry is now correctly unmatched instead of
+   confidently wrong. One thing deliberately **not** done:
+   fuzzy-matching a surname by character similarity (to catch spelling
+   variants like "Riccheri"/"Ricchieri") - tested it, and it also happily
+   matches "Córdoba"/"Córdova" and "Romero"/"Rovero", which are not the
+   same people. Reverted; a few more unmatched rows is a better trade than
    occasionally attaching the wrong person's biography to a street.
 
 Re-running the whole pipeline:

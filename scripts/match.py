@@ -149,6 +149,23 @@ def candidates_for_book_name(raw_name: str):
     return out, anchor
 
 
+def with_type_hint(candidates, type_label):
+    """Candidates prefixed with *this specific* type word ("jardín
+    botánico" vs "parque"), tried BEFORE the type-agnostic ones - needed
+    when a row names two genuinely different physical features that both
+    fall in the same layer, like "THAYS, CARLOS (jardín botánico;
+    parque)": Jardín Botánico Carlos Thays and Parque Carlos Thays are
+    different places in OSM. The exact-match check tries candidates in
+    order and stops at the first hit, so if the type-agnostic "Carlos
+    Thays" came first (it's already an exact hit, for the *other* Thays
+    park's cleaned name) it would win regardless of which type we're
+    actually looking for - the type-specific form has to be tried first."""
+    prefix = normalize(type_label)
+    if not prefix:
+        return candidates
+    return [f"{prefix} {c}" for c in candidates] + candidates
+
+
 def round_coords(coords, nd=5):
     return [round(c, nd) for c in coords]
 
@@ -312,8 +329,29 @@ def story_name_words(detail_text: str):
     return set(normalize(m.group(1)).split())
 
 
-def find_match(candidates, anchor, index, index_keys_words, registry, cutoff=0.90, dice_cutoff=0.75, story_words=None):
+def find_match(candidates, anchor, index, index_keys_words, registry, cutoff=0.90, dice_cutoff=0.75, story_words=None, base=None):
+    # `base` is the fullest *type-agnostic* candidate (all given-name words
+    # present, nothing truncated) - used below wherever "the whole name" is
+    # needed. Defaults to candidates[0], but callers that put a type-hinted
+    # candidate first (see with_type_hint) must pass the real one
+    # explicitly, or a leaked "jardín botánico" would show up as a
+    # contradicting "extra word" in the uniqueness check.
+    if base is None:
+        base = candidates[0]
+    # If the book gives more than a bare surname (a real given name, not
+    # just an honorific - "Saavedra, Mariano" has one, "Seeber, Intendente"
+    # doesn't once "Intendente" is stripped), the bare-surname candidate
+    # ("SAAVEDRA" alone) must not be allowed to win a blind exact match:
+    # "Parque Saavedra" cleans down to exactly "SAAVEDRA" with no given
+    # name of its own, and that's a real, different park (Cornelio de
+    # Saavedra's, not his son Mariano's) - only the fuzzy/unique-surname
+    # tiers below actually check whether a given name agrees or
+    # contradicts, so a bare-word candidate is only safe to exact-match
+    # when the book didn't have a given name to discard in the first place.
+    book_extra = set(strip_honorifics(base).split()) - {anchor}
     for c in candidates:
+        if book_extra and c == anchor:
+            continue
         if c in index:
             return c, "exact"
     # Token-set fuzzy fallback: best Dice-coefficient match across all
@@ -321,6 +359,8 @@ def find_match(candidates, anchor, index, index_keys_words, registry, cutoff=0.9
     # word (its surname/first significant word) to avoid false positives.
     best_key, best_score, best_words = None, 0.0, None
     for c in candidates:
+        if book_extra and c == anchor:
+            continue  # same reasoning as the exact-match skip above
         words = set(c.split())
         if not words:
             continue
@@ -360,7 +400,7 @@ def find_match(candidates, anchor, index, index_keys_words, registry, cutoff=0.9
             # from the OSM side (key_extra), so an untouched "Intendente"
             # left in cand_extra would never find anything to agree with
             # and wrongly read as a contradiction.
-            cand_extra = set(strip_honorifics(candidates[0]).split()) - {anchor}
+            cand_extra = set(strip_honorifics(base).split()) - {anchor}
             header_ok = all(any(words_compatible(w, kw) for kw in key_extra) for w in cand_extra)
             # When the header itself is a bare surname (cand_extra empty,
             # so header_ok is only vacuously true), that's not real
@@ -376,7 +416,7 @@ def find_match(candidates, anchor, index, index_keys_words, registry, cutoff=0.9
                 )):
                     return key, "fuzzy-unique-surname"
     # last resort: plain character-sequence fuzzy match (catches near-typos)
-    close = get_close_matches(candidates[0], list(index.keys()), n=1, cutoff=cutoff)
+    close = get_close_matches(base, list(index.keys()), n=1, cutoff=cutoff)
     if close:
         return close[0], "fuzzy-char"
     return None, None
@@ -405,35 +445,45 @@ def main():
             continue
         candidates, anchor = candidates_for_book_name(r["name"])
 
-        # A row can carry types spanning more than one physical feature (the
+        # A row can carry types spanning more than one physical feature - the
         # book's "CHACABUCO (calle; parque)" is both a street AND the park
-        # that gave the surrounding barrio its name) - try every layer its
-        # types touch, and emit one feature per layer that actually matches,
-        # instead of stopping at the first hit and silently dropping the
-        # rest.
-        wants_street = any(t in STREET_TYPES or t not in (PARK_TYPES | BARRIO_TYPES) for t in types)
-        wants_park = any(t in PARK_TYPES for t in types)
-        wants_barrio = any(t in BARRIO_TYPES for t in types)
-
+        # that gave the surrounding barrio its name, and "THAYS, CARLOS
+        # (jardín botánico; parque)" covers two *different* parks (Jardín
+        # Botánico Carlos Thays and Parque Carlos Thays are separate OSM
+        # features). So: try every type against every layer it could belong
+        # to, with a type-specific candidate so "jardín botánico" and
+        # "parque" don't just both find the same nearest match, and dedupe
+        # only when two types genuinely resolve to the same feature (e.g.
+        # "calle; avenida" naming one street two ways).
         story_words = story_name_words(r["detail_text"])
+        seen = {}  # (kind, key) -> method
+        for t in types:
+            if t in STREET_TYPES or t not in (PARK_TYPES | BARRIO_TYPES):
+                cands = with_type_hint(candidates, t)
+                key, method = find_match(cands, anchor, street_idx, street_words, street_registry, story_words=story_words, base=candidates[0])
+                if key:
+                    seen.setdefault(("street", key), method)
+            if t in PARK_TYPES:
+                cands = with_type_hint(candidates, t)
+                key, method = find_match(cands, anchor, park_idx, park_words, park_registry, story_words=story_words, base=candidates[0])
+                if key:
+                    seen.setdefault(("park", key), method)
+            if t in BARRIO_TYPES:
+                cands = with_type_hint(candidates, t)
+                key, method = find_match(cands, anchor, barrio_idx, barrio_words, barrio_registry, cutoff=0.93, story_words=story_words, base=candidates[0])
+                if key:
+                    seen.setdefault(("barrio", key), method)
 
         row_matches = []
-        if wants_street:
-            key, method = find_match(candidates, anchor, street_idx, street_words, street_registry, story_words=story_words)
-            if key:
+        for (kind, key), method in seen.items():
+            if kind == "street":
                 geom = {"type": "MultiLineString", "coordinates": street_idx[key]}
-                row_matches.append(("street", method, geom))
-        if wants_park:
-            key, method = find_match(candidates, anchor, park_idx, park_words, park_registry, story_words=story_words)
-            if key:
+            elif kind == "park":
                 coords = [ring for group in park_idx[key] for ring in group]
                 geom = {"type": "MultiPolygon", "coordinates": [[ring] for ring in coords]}
-                row_matches.append(("park", method, geom))
-        if wants_barrio:
-            key, method = find_match(candidates, anchor, barrio_idx, barrio_words, barrio_registry, cutoff=0.93, story_words=story_words)
-            if key:
+            else:
                 geom = {"type": "MultiPolygon", "coordinates": [[ring] for ring in barrio_idx[key]]}
-                row_matches.append(("barrio", method, geom))
+            row_matches.append((kind, method, geom))
 
         if row_matches:
             for kind, method, geom in row_matches:
