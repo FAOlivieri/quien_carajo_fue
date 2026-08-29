@@ -232,6 +232,32 @@ function popupHtml(props) {
     <div class="popup-page">Piñeiro (2008), p. ${escapeHtml(String(props.source_page))}</div>`;
 }
 
+// A feature's bounding-box center (what map.getBounds().getCenter() gives
+// you) is not necessarily anywhere near the feature itself - a long,
+// curving avenue like Juan B. Justo (200+ segments zig-zagging ~10km) can
+// easily have its bbox center fall blocks away from the nearest point the
+// street actually passes through. This instead returns a point that is
+// genuinely part of the geometry, for anchoring the search result popup.
+function representativePoint(feature) {
+  const g = feature.geometry;
+  if (g.type === 'MultiLineString' || g.type === 'LineString') {
+    const lines = g.type === 'MultiLineString' ? g.coordinates : [g.coordinates];
+    const mid = lines[Math.floor(lines.length / 2)];
+    const pt = mid[Math.floor(mid.length / 2)];
+    return [pt[1], pt[0]];
+  }
+  if (g.type === 'MultiPolygon' || g.type === 'Polygon') {
+    const polys = g.type === 'MultiPolygon' ? g.coordinates : [g.coordinates];
+    let ring = polys[0][0];
+    for (const poly of polys) if (poly[0].length > ring.length) ring = poly[0];
+    let sx = 0, sy = 0;
+    for (const [x, y] of ring) { sx += x; sy += y; }
+    return [sy / ring.length, sx / ring.length];
+  }
+  const b = L.geoJSON(feature).getBounds().getCenter();
+  return [b.lat, b.lng];
+}
+
 function onEachFeature(feature, layer) {
   // Parks/plazas only now - streets use addStreetFeature (paired visible +
   // hit layers) and barrios have their own handler above.
@@ -311,9 +337,7 @@ input.addEventListener('input', () => {
     row.addEventListener('click', () => {
       const layer = L.geoJSON(f);
       map.fitBounds(layer.getBounds(), { maxZoom: 17 });
-      layer.eachLayer(l => {
-        L.popup().setLatLng(layer.getBounds().getCenter()).setContent(popupHtml(f.properties)).openOn(map);
-      });
+      L.popup().setLatLng(representativePoint(f)).setContent(popupHtml(f.properties)).openOn(map);
       resultsBox.style.display = 'none';
       input.value = f.properties.name;
     });
