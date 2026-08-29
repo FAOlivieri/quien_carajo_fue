@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd \"c:/Users/feder/OneDrive/Fede/Code/History_map/Buenos_Aires\" && mkdir -p data scripts && cp \"/c/Users/feder/AppData/Local/Temp/claude/c--Users-feder-OneDrive-Fede-Code-History-map-Buenos-Aires/e02e7b4c-165d-4758-a040-3fb0a5ec1073/scratchpad/razon_full.txt\" data/raw_text.txt && wc -l data/raw_text.txt)",
+      "Bash(python3 -)",
+      "Bash(python3 scripts/parse_book.py)"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\feder\\AppData\\Local\\Temp\\claude\\c--Users-feder-OneDrive-Fede-Code-History-map-Buenos-Aires\\e02e7b4c-165d-4758-a040-3fb0a5ec1073\\scratchpad"
+    ]
+  }
+}

@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>¿Quién carajo fué?</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🗺️</text></svg>">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+<style>
+  :root {
+    --ink: #23241f;
+    --paper: #faf6ef;
+    --accent: #b5471b;
+    --line: #d8cfbe;
+  }
+  html, body { height: 100%; margin: 0; font-family: Georgia, 'Times New Roman', serif; color: var(--ink); background: var(--paper); }
+  #map { position: absolute; top: 0; right: 0; bottom: 0; left: 0; background: #eee5d3; }
+
+  /* header + search box live in one flex row that wraps to a stack once
+     they no longer fit side by side, so neither ever overlaps the other. */
+  #topbar {
+    position: absolute; z-index: 1000; top: 14px; left: 16px; right: 16px;
+    display: flex; flex-wrap: wrap; align-items: flex-start;
+    justify-content: space-between; gap: 10px;
+    pointer-events: none;
+  }
+  #topbar > * { pointer-events: auto; }
+
+  #header {
+    position: relative;
+    max-width: min(420px, 100%);
+    background: var(--paper); border: 1px solid var(--line); border-radius: 6px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    padding: 12px 40px 12px 16px;
+  }
+  #header h1 { margin: 0 0 4px 0; font-size: 1.35rem; letter-spacing: 0.02em; }
+  #header p { margin: 0; font-size: 0.82rem; color: #6b6455; font-family: -apple-system, Segoe UI, sans-serif; }
+  #header .credit { margin-top: 6px; font-style: italic; }
+  #header-toggle {
+    position: absolute; top: 10px; right: 10px;
+    width: 22px; height: 22px; padding: 0; box-sizing: border-box;
+    border: 1px solid var(--line); border-radius: 50%; background: var(--paper); color: var(--ink);
+    font-family: -apple-system, Segoe UI, sans-serif; font-size: 0.95rem; line-height: 1;
+    display: flex; align-items: center; justify-content: center; cursor: pointer;
+  }
+  #header-toggle:hover { background: #f1e9d8; }
+  #header.collapsed { padding: 8px 40px 8px 14px; }
+  #header.collapsed h1 { margin: 0; font-size: 1rem; }
+  #header.collapsed #header-body { display: none; }
+
+  #search-box {
+    background: var(--paper); border: 1px solid var(--line); border-radius: 6px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    font-family: -apple-system, Segoe UI, sans-serif;
+    width: min(320px, 100%);
+    flex-shrink: 0;
+  }
+  #search-box input {
+    width: 100%; box-sizing: border-box; border: none; background: transparent;
+    padding: 10px 12px; font-size: 0.95rem; outline: none; color: var(--ink);
+  }
+  #search-results {
+    max-height: 260px; overflow-y: auto; border-top: 1px solid var(--line); display: none;
+  }
+  #search-results div {
+    padding: 7px 12px; font-size: 0.85rem; cursor: pointer; border-bottom: 1px solid #efe9dc;
+  }
+  #search-results div:hover, #search-results div.active { background: #f1e9d8; }
+  #search-results .kind { color: #948a76; font-size: 0.75rem; margin-left: 6px; }
+
+  .leaflet-popup-content-wrapper { background: var(--paper); color: var(--ink); border-radius: 4px; }
+  .leaflet-popup-content { font-family: -apple-system, Segoe UI, sans-serif; font-size: 0.87rem; line-height: 1.45; max-width: 300px; }
+  .popup-name { font-family: Georgia, serif; font-size: 1.05rem; font-weight: bold; margin-bottom: 2px; }
+  .popup-type { color: var(--accent); text-transform: uppercase; font-size: 0.7rem; letter-spacing: 0.06em; margin-bottom: 8px; }
+  .popup-detail { margin-bottom: 6px; }
+  .popup-page { color: #948a76; font-size: 0.75rem; }
+
+  #legend {
+    position: absolute; z-index: 1000; bottom: 20px; left: 12px;
+    background: var(--paper); border: 1px solid var(--line); border-radius: 6px;
+    padding: 8px 12px; font-family: -apple-system, Segoe UI, sans-serif; font-size: 0.78rem;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  }
+  #legend div { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
+  #legend .swatch { width: 16px; height: 3px; border-radius: 2px; display: inline-block; }
+  #legend .swatch.poly { width: 14px; height: 10px; border-radius: 2px; }
+
+  #stats {
+    position: absolute; z-index: 1000; bottom: 8px; right: 10px;
+    font-family: -apple-system, Segoe UI, sans-serif; font-size: 0.7rem; color: #8a8371;
+    background: rgba(250,246,239,0.85); padding: 3px 8px; border-radius: 4px;
+  }
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<div id="topbar">
+  <div id="header">
+    <button id="header-toggle" aria-label="Minimizar" title="Minimizar">−</button>
+    <h1>¿Quién carajo fué?</h1>
+    <div id="header-body">
+      <p>Un mapa de Buenos Aires con el origen de los nombres de sus calles, plazas y barrios.
+      Hacé clic en cualquier elemento resaltado para ver su historia.</p>
+      <p class="credit">Fuente: Alberto Gabriel Piñeiro, <em>Barrios, calles y plazas de la Ciudad de Buenos Aires. Origen y razón de sus nombres</em> (Instituto Histórico de la Ciudad de Buenos Aires, 2008).</p>
+    </div>
+  </div>
+
+  <div id="search-box">
+    <input id="search-input" type="text" placeholder="Buscar una calle, plaza o barrio…" autocomplete="off">
+    <div id="search-results"></div>
+  </div>
+</div>
+
+<div id="legend">
+  <div><span class="swatch" style="background:#b5471b;"></span> Calles y avenidas</div>
+  <div><span class="swatch poly" style="background:#5a8f3c; opacity:0.55;"></span> Plazas y parques</div>
+  <div><span class="swatch poly" style="background:none; border:1.5px dashed #7a6a9c;"></span> Barrios</div>
+</div>
+
+<div id="stats"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+const map = L.map('map', { zoomControl: false, preferCanvas: true, maxBoundsViscosity: 1.0 }).setView([-34.6118, -58.4113], 12);
+L.control.zoom({ position: 'bottomright' }).addTo(map);
+
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19,
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+}).addTo(map);
+
+// Keep the map focused on CABA: everything outside the city limits is
+// masked out, and once the whole city fits on screen you can't zoom out or
+// pan away from it any further.
+fetch('data/caba_boundary.geojson')
+  .then(r => r.json())
+  .then(caba => {
+    const WORLD_RING = [[-180, -85], [180, -85], [180, 85], [-180, 85], [-180, -85]];
+    const holes = caba.geometry.coordinates.map(poly => poly[0]);
+    L.geoJSON({ type: 'Polygon', coordinates: [WORLD_RING, ...holes] }, {
+      interactive: false,
+      style: { stroke: false, fillColor: '#1a1a1a', fillOpacity: 0.45 }
+    }).addTo(map);
+
+    const bounds = L.geoJSON(caba).getBounds().pad(0.08);
+    map.setMaxBounds(bounds);
+    const fitWholeCity = () => map.setMinZoom(map.getBoundsZoom(bounds, false));
+    fitWholeCity();
+    window.addEventListener('resize', fitWholeCity);
+  })
+  .catch(err => console.error('Could not load data/caba_boundary.geojson', err));
+
+// Streets are drawn as two aligned layers: a thin VISIBLE line (so the
+// basemap's own street-name labels underneath stay legible) and an
+// invisible, much wider HIT line on top that actually catches clicks/hover
+// - a line a couple of pixels wide is a frustrating click target otherwise.
+function streetStyleForZoom(zoom) {
+  if (zoom >= 16) return { color: '#b5471b', weight: 2, opacity: 0.8 };
+  if (zoom >= 14) return { color: '#b5471b', weight: 1.5, opacity: 0.7 };
+  return { color: '#b5471b', weight: 1, opacity: 0.5 };
+}
+function streetHoverStyleForZoom(zoom) {
+  const base = streetStyleForZoom(zoom);
+  return { ...base, weight: base.weight + 2.5, opacity: 1 };
+}
+
+const streetVisible = L.layerGroup();
+const streetHit = L.layerGroup();
+const streetLayer = L.layerGroup([streetVisible, streetHit]); // one toggle unit for both
+
+function addStreetFeature(feature) {
+  const visible = L.geoJSON(feature, { style: () => streetStyleForZoom(map.getZoom()), interactive: false });
+  const hit = L.geoJSON(feature, { style: { weight: 14, opacity: 0 } });
+  hit.eachLayer(l => {
+    l.bindPopup(popupHtml(feature.properties));
+    l.on('mouseover', () => visible.setStyle(streetHoverStyleForZoom(map.getZoom())));
+    l.on('mouseout', () => visible.setStyle(streetStyleForZoom(map.getZoom())));
+  });
+  streetVisible.addLayer(visible);
+  streetHit.addLayer(hit);
+}
+map.on('zoomend', () => streetVisible.eachLayer(l => l.setStyle(streetStyleForZoom(map.getZoom()))));
+
+// At a whole-city zoom, thousands of thin streets packed a few pixels apart
+// are nearly impossible to click accurately and just clutter the view -
+// clicking should reliably mean "this barrio" (or a park) at that scale.
+// Below this zoom streets are hidden entirely (not just non-interactive) -
+// a line that looks clickable but isn't is worse than not showing it -
+// restored once zoomed in enough to tell individual streets apart.
+const STREET_INTERACTIVE_MIN_ZOOM = 15;
+function updateStreetVisibility() {
+  const shouldShow = map.getZoom() >= STREET_INTERACTIVE_MIN_ZOOM;
+  const isShown = streetLayer.hasLayer(streetHit);
+  if (shouldShow && !isShown) { streetLayer.addLayer(streetVisible); streetLayer.addLayer(streetHit); }
+  else if (!shouldShow && isShown) { streetLayer.removeLayer(streetVisible); streetLayer.removeLayer(streetHit); }
+}
+map.on('zoomend', updateStreetVisibility);
+map.on('overlayadd', e => { if (e.layer === streetLayer) updateStreetVisibility(); });
+
+const parkLayer = L.geoJSON(null, {
+  style: { color: '#3f6b2a', weight: 1, fillColor: '#5a8f3c', fillOpacity: 0.45 },
+  onEachFeature: onEachFeature
+});
+
+// Barrios: a light, always-visible tint so the neighborhood's full extent
+// reads at a glance, brightening further on hover/click so the selected
+// barrio is unmistakable.
+const BARRIO_STYLE = { color: '#7a6a9c', weight: 1.5, dashArray: '5,4', fillColor: '#7a6a9c', fillOpacity: 0.08 };
+const BARRIO_HOVER_STYLE = { ...BARRIO_STYLE, weight: 2.5, fillOpacity: 0.3 };
+const BARRIO_SELECTED_STYLE = { ...BARRIO_STYLE, weight: 2.5, fillOpacity: 0.45 };
+const barrioLayer = L.geoJSON(null, {
+  style: BARRIO_STYLE,
+  onEachFeature: (feature, layer) => {
+    layer.bindPopup(popupHtml(feature.properties));
+    layer.on('mouseover', () => { if (!layer.isPopupOpen()) layer.setStyle(BARRIO_HOVER_STYLE); });
+    layer.on('mouseout', () => { if (!layer.isPopupOpen()) layer.setStyle(BARRIO_STYLE); });
+    layer.on('popupopen', () => layer.setStyle(BARRIO_SELECTED_STYLE));
+    layer.on('popupclose', () => layer.setStyle(BARRIO_STYLE));
+  }
+});
+
+function escapeHtml(s) {
+  return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function popupHtml(props) {
+  return `<div class="popup-name">${escapeHtml(props.name)}</div>
+    <div class="popup-type">${escapeHtml(props.feature_types)}</div>
+    <div class="popup-detail">${escapeHtml(props.detail_text)}</div>
+    <div class="popup-page">Piñeiro (2008), p. ${escapeHtml(String(props.source_page))}</div>`;
+}
+
+function onEachFeature(feature, layer) {
+  // Parks/plazas only now - streets use addStreetFeature (paired visible +
+  // hit layers) and barrios have their own handler above.
+  layer.bindPopup(popupHtml(feature.properties));
+  layer.on('mouseover', () => layer.setStyle({ weight: 3 }));
+  layer.on('mouseout', () => parkLayer.resetStyle(layer));
+}
+
+let allFeatures = [];
+
+fetch('data/matched.geojson')
+  .then(r => r.json())
+  .then(data => {
+    allFeatures = data.features;
+    const streets = { type: 'FeatureCollection', features: [] };
+    const parks = { type: 'FeatureCollection', features: [] };
+    const barrios = { type: 'FeatureCollection', features: [] };
+    for (const f of data.features) {
+      if (f.properties.kind === 'street') streets.features.push(f);
+      else if (f.properties.kind === 'park') parks.features.push(f);
+      else if (f.properties.kind === 'barrio') barrios.features.push(f);
+    }
+    barrioLayer.addData(barrios);
+    parkLayer.addData(parks);
+    streets.features.forEach(addStreetFeature);
+    barrioLayer.addTo(map);
+    parkLayer.addTo(map);
+    streetLayer.addTo(map);
+    updateStreetVisibility();
+
+    L.control.layers(null, {
+      'Calles y avenidas': streetLayer,
+      'Plazas y parques': parkLayer,
+      'Barrios': barrioLayer
+    }, { collapsed: true, position: 'topright' }).addTo(map);
+
+    document.getElementById('stats').textContent =
+      `${data.features.length.toLocaleString('es-AR')} lugares con historia`;
+  })
+  .catch(err => {
+    document.getElementById('stats').textContent = 'No se pudo cargar data/matched.geojson';
+    console.error(err);
+  });
+
+// --- header minimize toggle ---
+const headerEl = document.getElementById('header');
+const headerToggle = document.getElementById('header-toggle');
+headerToggle.addEventListener('click', () => {
+  const collapsed = headerEl.classList.toggle('collapsed');
+  headerToggle.textContent = collapsed ? '+' : '−';
+  headerToggle.title = headerToggle.ariaLabel = collapsed ? 'Expandir' : 'Minimizar';
+});
+
+// --- search ---
+const input = document.getElementById('search-input');
+const resultsBox = document.getElementById('search-results');
+
+function stripAccents(s) {
+  return s.normalize('NFD').replace(/[̀-ͯ]/g, '');
+}
+
+function normalizeQuery(s) {
+  return stripAccents(s).toUpperCase();
+}
+
+input.addEventListener('input', () => {
+  const q = normalizeQuery(input.value.trim());
+  resultsBox.innerHTML = '';
+  if (q.length < 2) { resultsBox.style.display = 'none'; return; }
+  const matches = allFeatures
+    .filter(f => normalizeQuery(f.properties.name).includes(q))
+    .slice(0, 20);
+  if (!matches.length) { resultsBox.style.display = 'none'; return; }
+  for (const f of matches) {
+    const row = document.createElement('div');
+    row.innerHTML = `${escapeHtml(f.properties.name)}<span class="kind">${escapeHtml(f.properties.kind)}</span>`;
+    row.addEventListener('click', () => {
+      const layer = L.geoJSON(f);
+      map.fitBounds(layer.getBounds(), { maxZoom: 17 });
+      layer.eachLayer(l => {
+        L.popup().setLatLng(layer.getBounds().getCenter()).setContent(popupHtml(f.properties)).openOn(map);
+      });
+      resultsBox.style.display = 'none';
+      input.value = f.properties.name;
+    });
+    resultsBox.appendChild(row);
+  }
+  resultsBox.style.display = 'block';
+});
+
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('#search-box')) resultsBox.style.display = 'none';
+});
+</script>
+
+</body>
+</html>

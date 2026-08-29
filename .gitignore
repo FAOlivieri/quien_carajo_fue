@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+data/raw_text.txt
+data/unparsed_blocks.txt
+data/osm_streets_raw.json
+data/osm_parks_raw.json
+data/osm_barrios_raw.json
