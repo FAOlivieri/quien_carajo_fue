@@ -144,9 +144,20 @@ fetch('data/caba_boundary.geojson')
       style: { stroke: false, fillColor: '#1a1a1a', fillOpacity: 0.45 }
     }).addTo(map);
 
-    const bounds = L.geoJSON(caba).getBounds().pad(0.08);
-    map.setMaxBounds(bounds);
-    const fitWholeCity = () => map.setMinZoom(map.getBoundsZoom(bounds, false));
+    // Two different bounds on purpose: a *tight* one just to compute "the
+    // whole city fits on screen" (minZoom), and a much more generous one
+    // for the actual pan limit. Panning is a hard wall (maxBoundsViscosity
+    // 1.0) - a neighborhood right at city's edge (e.g. Villa Real, in the
+    // far west) can only ever be pushed to the matching edge of the
+    // viewport once zoomed in, never centered, if the pan boundary sits
+    // right on the real city edge. The extra margin here gives room to
+    // actually center edge neighborhoods instead of pinning them flush
+    // against the screen edge - especially cramped on a narrow phone
+    // screen, where that margin is a bigger share of what's visible.
+    const fitBounds = L.geoJSON(caba).getBounds().pad(0.08);
+    const panBounds = fitBounds.pad(0.6);
+    map.setMaxBounds(panBounds);
+    const fitWholeCity = () => map.setMinZoom(map.getBoundsZoom(fitBounds, false));
     fitWholeCity();
     window.addEventListener('resize', fitWholeCity);
   })
