@@ -69,7 +69,10 @@
   #search-results .kind { color: #948a76; font-size: 0.75rem; margin-left: 6px; }
 
   .leaflet-popup-content-wrapper { background: var(--paper); color: var(--ink); border-radius: 4px; }
-  .leaflet-popup-content { font-family: -apple-system, Segoe UI, sans-serif; font-size: 0.87rem; line-height: 1.45; max-width: 300px; }
+  .leaflet-popup-content {
+    font-family: -apple-system, Segoe UI, sans-serif; font-size: 0.87rem; line-height: 1.45;
+    max-width: 300px; max-height: min(50vh, 420px); overflow-y: auto;
+  }
   .popup-name { font-family: Georgia, serif; font-size: 1.05rem; font-weight: bold; margin-bottom: 2px; }
   .popup-type { color: var(--accent); text-transform: uppercase; font-size: 0.7rem; letter-spacing: 0.06em; margin-bottom: 8px; }
   .popup-detail { margin-bottom: 6px; }
@@ -145,21 +148,42 @@ fetch('data/caba_boundary.geojson')
     }).addTo(map);
 
     // Two different bounds on purpose: a *tight* one just to compute "the
-    // whole city fits on screen" (minZoom), and a much more generous one
-    // for the actual pan limit. Panning is a hard wall (maxBoundsViscosity
-    // 1.0) - a neighborhood right at city's edge (e.g. Villa Real, in the
-    // far west) can only ever be pushed to the matching edge of the
-    // viewport once zoomed in, never centered, if the pan boundary sits
-    // right on the real city edge. The extra margin here gives room to
-    // actually center edge neighborhoods instead of pinning them flush
-    // against the screen edge - especially cramped on a narrow phone
-    // screen, where that margin is a bigger share of what's visible.
+    // whole city fits on screen" (minZoom), and a separate one for the
+    // actual pan limit. Panning is a hard wall (maxBoundsViscosity 1.0), so
+    // a popup opened right at the city's edge (e.g. Villa Real, in the far
+    // west) needs real screen room beyond the true city boundary to be
+    // panned fully into view - otherwise it's stuck clipped against the
+    // wall. A *fixed* geographic margin doesn't work for this: how many
+    // degrees a popup's pixel size corresponds to changes completely with
+    // zoom (that's also why the problem is worst at minZoom - you're stuck
+    // at the zoom where the same popup covers the most geographic ground,
+    // and you can't zoom out any further to shrink it). So the margin is
+    // computed in pixels - matching the popup's actual max size in the CSS
+    // above - and converted to degrees at whatever zoom is current, redone
+    // on every zoom change.
     const fitBounds = L.geoJSON(caba).getBounds().pad(0.08);
-    const panBounds = fitBounds.pad(0.6);
-    map.setMaxBounds(panBounds);
+    const POPUP_MARGIN_PX = { x: 340, y: 460 }; // popup max-width 300px + chrome; max-height 420px + tip/chrome
+
+    function pixelMarginToLatLng(px, atLatLng, zoom) {
+      const p = map.project(atLatLng, zoom);
+      const shifted = map.unproject(L.point(p.x + px.x, p.y + px.y), zoom);
+      return { dLat: Math.abs(atLatLng.lat - shifted.lat), dLng: Math.abs(atLatLng.lng - shifted.lng) };
+    }
+
+    function updatePanBounds() {
+      const { dLat, dLng } = pixelMarginToLatLng(POPUP_MARGIN_PX, fitBounds.getCenter(), map.getZoom());
+      const sw = fitBounds.getSouthWest(), ne = fitBounds.getNorthEast();
+      map.setMaxBounds(L.latLngBounds(
+        [sw.lat - dLat, sw.lng - dLng],
+        [ne.lat + dLat, ne.lng + dLng]
+      ));
+    }
+
     const fitWholeCity = () => map.setMinZoom(map.getBoundsZoom(fitBounds, false));
     fitWholeCity();
+    updatePanBounds();
     window.addEventListener('resize', fitWholeCity);
+    map.on('zoomend', updatePanBounds);
   })
   .catch(err => console.error('Could not load data/caba_boundary.geojson', err));
 
