@@ -32,9 +32,8 @@ STOP_MARKERS = [
 ]
 
 NAME_CHARS = r"A-ZÁÉÍÓÚÑÜ0-9´’"
-# A header segment: NAME (tipo). - the type is required to be a lowercase
-# word/phrase so this can't be confused with an inline "(1900-1954)"
-# birth-death parenthetical (those follow Title Case names, not ALL CAPS).
+# A header segment: NAME (tipo). - tipo must be lowercase so this can't
+# match an inline "(1900-1954)" birth-death parenthetical instead.
 HEADER_SEG_RE = re.compile(
     r'([' + NAME_CHARS + r'][' + NAME_CHARS + r' ,\.\'º°/&\-]{0,90}?)'
     r'\s*\(([a-záéíóúñü][a-záéíóúñü \-/]{1,58})\)\.\s*'
@@ -45,11 +44,9 @@ SENTENCE_BOUNDARY_RE = re.compile(r'[.!?]\s+|\d\s+(?=[A-ZÁÉÍÓÚÑÜ])')
 
 
 def find_headers(joined):
-    """Find every header-shaped match in the block, trying only at the very
-    start of the block or right after a sentence boundary (so an ALL-CAPS
-    cross-reference inside a narrative paragraph can't be mistaken for the
-    start of a new dictionary entry, and a name containing a date like
-    "27-11-1893." can't be greedily absorbed starting mid-sentence)."""
+    """Find every header-shaped match, only at block start or right after a
+    sentence boundary - avoids matching an ALL-CAPS cross-reference or a
+    date greedily absorbed mid-sentence."""
     boundaries = sorted({0, *(bm.end() for bm in SENTENCE_BOUNDARY_RE.finditer(joined))})
     out = []
     last_end = -1
@@ -66,6 +63,59 @@ VEASE_RE = re.compile(
     r'\s+[Vv][eé]ase\s+(.+?)\.?\s*$'
 )
 FOOTNOTE_RE = re.compile(r'(?<=[a-záéíóúñü\)])\.(\d{1,3})(?=\s|$)')
+
+# A sentence belongs to the legal citation, not the story, if it mentions
+# a legal instrument or reference number anywhere - citations often have a
+# long lead-in before the actual keyword, so this isn't anchored to the
+# sentence start.
+LEGAL_KEYWORDS = (
+    r'(?:Ordenanzas?|Ley(?:es)?|Decretos?(?:-Ordenanzas?)?|Resoluci[oó]n(?:es)?|'
+    r'Disposici[oó]n(?:es)?|Planos?|BM|BO|BB\.MM)'
+)
+LEGAL_MENTION_RE = re.compile(rf'\b{LEGAL_KEYWORDS}\b|N[°º]', re.IGNORECASE)
+# Exceptions: a biography can mention a law in passing while describing the
+# person's career, and a definition can mention its subject's founding
+# decree. Both are narrative regardless of what they go on to mention.
+BIO_START_RE = re.compile(
+    r"[A-ZÁÉÍÓÚÑÜ][\wÀ-ſ'.]*(?:\s+[A-Za-zÀ-ſ'.]+){0,5}\s*\([^)]{1,30}-[^)]{1,30}\)"
+)
+DEFINITION_START_RE = re.compile(r"^[A-ZÁÉÍÓÚÑÜ][^:]{0,80}:\s")
+
+
+def is_legal_sentence(s):
+    if BIO_START_RE.search(s) or DEFINITION_START_RE.match(s):
+        return False
+    return bool(LEGAL_MENTION_RE.search(s))
+
+
+SENTENCE_BREAK_RE = re.compile(r'(?<=[.!?])\s+')
+# Title abbreviations ending in a period ("Dr.", "Gral.") that aren't a
+# sentence end; a single-letter initial ("Juan A. Ambrosetti") is the same
+# problem but checked separately since it can be any letter.
+ABBREVIATIONS = {
+    "dr", "dra", "sr", "sra", "srta", "gral", "cnel", "cte", "cmte", "cap",
+    "ing", "arq", "prof", "mons", "fray", "pbro", "rvdo", "excmo", "av",
+    "avda", "nro", "nros", "gob", "pdte", "vdo", "vda", "tte", "alte",
+    "sgto", "sto", "sta", "dtor", "gdor",
+}
+
+
+def split_sentences(text):
+    """Split into sentences, then merge back breaks that weren't a real
+    sentence end: an abbreviation/initial ending in a period, or a period
+    inside a still-open parenthetical."""
+    parts = SENTENCE_BREAK_RE.split(text)
+    merged = []
+    for part in parts:
+        if merged:
+            m = re.search(r"(\w+)\.$", merged[-1])
+            is_abbrev = m and (len(m.group(1)) == 1 and m.group(1).isupper() or m.group(1).lower() in ABBREVIATIONS)
+            unbalanced_parens = merged[-1].count("(") > merged[-1].count(")")
+            if is_abbrev or unbalanced_parens:
+                merged[-1] = merged[-1] + " " + part
+                continue
+        merged.append(part)
+    return merged
 
 
 def strip_accents(s: str) -> str:
@@ -153,63 +203,68 @@ def split_blocks(content, pages, stop_at):
     return blocks
 
 
-def parse_block(page, joined):
-    """Try to parse one joined block string into one or more (name, types,
-    detail_text, see_also) rows. Returns (rows, ok) where ok=False means the
-    block didn't match the dictionary-entry shape (kept for QA review)."""
-    # Redirect entry: "NAME vease OTHER."
-    m = VEASE_RE.match(joined)
-    if m:
-        name, target = m.group(1).strip(), m.group(2).strip()
-        return [{
-            "name": name, "feature_types": "", "detail_text": "",
-            "see_also": target, "source_page": page,
-        }], True
-
-    header_matches = find_headers(joined)
-    if not header_matches or header_matches[0].start() != 0:
-        return [], False
-
-    rows = group_headers_into_rows(page, joined, header_matches)
-    return rows, True
+def split_legal_and_narrative(span):
+    """Split one header's trailing text into (its own legal citation, the
+    narrative that follows it). Pure-citation spans return "" for the
+    narrative."""
+    span = span.strip()
+    if not span:
+        return "", ""
+    sentences = split_sentences(span)
+    i = 0
+    while i < len(sentences) and is_legal_sentence(sentences[i].strip()):
+        i += 1
+    return " ".join(sentences[:i]).strip(), " ".join(sentences[i:]).strip()
 
 
-def group_headers_into_rows(page, joined, header_matches):
-    """Group consecutive same-name headers (e.g. "ARENALES (calle). ...
-    ARENALES (plaza)." share one origin paragraph); a differently-named
-    header starts a new group - this also covers two unrelated entries
-    glued in one block with no blank line between them (e.g. "CAMPANA
-    (calle). ... CAMPANA, JOAQUÍN (cantero central). ...")."""
-    groups = []
-    for m in header_matches:
-        name = m.group(1).strip()
-        ftype = m.group(2).strip()
-        if groups and groups[-1]["name"] == name:
-            groups[-1]["types"].append(ftype)
-            groups[-1]["matches"].append(m)
+def finalize_members(page, members, narrative):
+    """Combine consecutive same-name members into one row each, keeping
+    their own legal citation(s) but sharing the one narrative."""
+    grouped = []
+    for mem in members:
+        if grouped and grouped[-1]["name"] == mem["name"]:
+            grouped[-1]["types"].append(mem["type"])
+            if mem["legal_ref"]:
+                grouped[-1]["legal_refs"].append(mem["legal_ref"])
         else:
-            groups.append({"name": name, "types": [ftype], "matches": [m]})
+            grouped.append({
+                "name": mem["name"], "types": [mem["type"]],
+                "legal_refs": [mem["legal_ref"]] if mem["legal_ref"] else [],
+            })
+    return [{
+        "name": g["name"], "feature_types": "; ".join(g["types"]),
+        "legal_ref": clean_text(" ".join(g["legal_refs"])),
+        "detail_text": clean_text(narrative),
+        "see_also": "", "source_page": page,
+    } for g in grouped]
 
+
+def build_entries(page, joined, header_matches):
+    """Walk a block's headers in order. The book lists one or more named
+    locations, each with its own citation, then one shared narrative for
+    all of them - so accumulate members until one's own trailing span
+    contains actual narrative text, then share that story back across
+    everything accumulated so far. A member whose own span is already a
+    complete narrative (two same-named entries typeset back to back with
+    unrelated stories) closes its group immediately instead of waiting."""
+    pending = []
     rows = []
-    for i, g in enumerate(groups):
-        detail_start = g["matches"][-1].end()
-        detail_end = groups[i + 1]["matches"][0].start() if i + 1 < len(groups) else len(joined)
-        rows.append({
-            "name": g["name"], "feature_types": "; ".join(g["types"]),
-            "detail_text": clean_text(joined[detail_start:detail_end]),
-            "see_also": "", "source_page": page,
-        })
+    for i, m in enumerate(header_matches):
+        start = m.end()
+        end = header_matches[i + 1].start() if i + 1 < len(header_matches) else len(joined)
+        legal_ref, narrative = split_legal_and_narrative(joined[start:end])
+        pending.append({"name": m.group(1).strip(), "type": m.group(2).strip(), "legal_ref": legal_ref})
+        if narrative or i == len(header_matches) - 1:
+            rows.extend(finalize_members(page, pending, narrative))
+            pending = []
     return rows
 
 
 def resplit_embedded_headers(rows):
-    """Cleanup pass: a same-named header that reappears after its own full
-    narrative already ran (e.g. a barrio's own story, followed - with no
-    blank line - by "NAME (avenida). NAME (plaza)." and a *different*,
-    shared biography) looks identical to a normal grouped header while
-    parsing and slips through as one oversized row. Re-scan every row's
-    detail_text for header-shaped matches and split those off as their own
-    row(s)."""
+    """A continuation merged across a stray page-boundary blank line can
+    smuggle in more headers that build_entries never saw as part of the
+    same block. Re-scan each row's detail_text for header-shaped matches
+    and re-run the same shared-narrative logic on whatever's found."""
     out = []
     for r in rows:
         header_matches = find_headers(r["detail_text"])
@@ -218,8 +273,29 @@ def resplit_embedded_headers(rows):
             continue
         lead = clean_text(r["detail_text"][:header_matches[0].start()])
         out.append({**r, "detail_text": lead})
-        out.extend(group_headers_into_rows(r["source_page"], r["detail_text"], header_matches))
+        out.extend(build_entries(r["source_page"], r["detail_text"], header_matches))
     return out
+
+
+def parse_block(page, joined):
+    """Try to parse one joined block string into one or more (name, types,
+    legal_ref, detail_text, see_also) rows. Returns (rows, ok) where
+    ok=False means the block didn't match the dictionary-entry shape (kept
+    for QA review)."""
+    # Redirect entry: "NAME vease OTHER."
+    m = VEASE_RE.match(joined)
+    if m:
+        name, target = m.group(1).strip(), m.group(2).strip()
+        return [{
+            "name": name, "feature_types": "", "legal_ref": "", "detail_text": "",
+            "see_also": target, "source_page": page,
+        }], True
+
+    header_matches = find_headers(joined)
+    if not header_matches or header_matches[0].start() != 0:
+        return [], False
+
+    return build_entries(page, joined, header_matches), True
 
 
 SECTION_LETTER_RE = re.compile(r'^[' + NAME_CHARS + r']$')
@@ -283,7 +359,7 @@ def main():
 
     OUT_CSV.parent.mkdir(parents=True, exist_ok=True)
     with OUT_CSV.open("w", encoding="utf-8-sig", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=["name", "feature_types", "detail_text", "see_also", "source_page"])
+        w = csv.DictWriter(f, fieldnames=["name", "feature_types", "legal_ref", "detail_text", "see_also", "source_page"])
         w.writeheader()
         for r in rows:
             w.writerow(r)

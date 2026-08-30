@@ -76,6 +76,7 @@
   .popup-name { font-family: Georgia, serif; font-size: 1.05rem; font-weight: bold; margin-bottom: 2px; }
   .popup-type { color: var(--accent); text-transform: uppercase; font-size: 0.7rem; letter-spacing: 0.06em; margin-bottom: 8px; }
   .popup-detail { margin-bottom: 6px; }
+  .popup-legal { color: #948a76; font-size: 0.75rem; margin-bottom: 4px; }
   .popup-page { color: #948a76; font-size: 0.75rem; }
 
   #legend {
@@ -134,9 +135,7 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
 }).addTo(map);
 
-// Keep the map focused on CABA: everything outside the city limits is
-// masked out, and once the whole city fits on screen you can't zoom out or
-// pan away from it any further.
+// Mask everything outside CABA, and clamp pan/zoom to the city.
 fetch('data/caba_boundary.geojson')
   .then(r => r.json())
   .then(caba => {
@@ -147,20 +146,11 @@ fetch('data/caba_boundary.geojson')
       style: { stroke: false, fillColor: '#1a1a1a', fillOpacity: 0.45 }
     }).addTo(map);
 
-    // Two different bounds on purpose: a *tight* one just to compute "the
-    // whole city fits on screen" (minZoom), and a separate one for the
-    // actual pan limit. Panning is a hard wall (maxBoundsViscosity 1.0), so
-    // a popup opened right at the city's edge (e.g. Villa Real, in the far
-    // west) needs real screen room beyond the true city boundary to be
-    // panned fully into view - otherwise it's stuck clipped against the
-    // wall. A *fixed* geographic margin doesn't work for this: how many
-    // degrees a popup's pixel size corresponds to changes completely with
-    // zoom (that's also why the problem is worst at minZoom - you're stuck
-    // at the zoom where the same popup covers the most geographic ground,
-    // and you can't zoom out any further to shrink it). So the margin is
-    // computed in pixels - matching the popup's actual max size in the CSS
-    // above - and converted to degrees at whatever zoom is current, redone
-    // on every zoom change.
+    // Two bounds: a tight one just for "whole city fits" (minZoom), and a
+    // separate pan limit with margin for a popup near the edge to be fully
+    // visible. The margin is computed in pixels (matching the popup's max
+    // size) and converted to degrees at the current zoom, redone on every
+    // zoom change - a fixed geographic margin wouldn't scale right.
     const fitBounds = L.geoJSON(caba).getBounds().pad(0.08);
     const POPUP_MARGIN_PX = { x: 340, y: 460 }; // popup max-width 300px + chrome; max-height 420px + tip/chrome
 
@@ -187,10 +177,9 @@ fetch('data/caba_boundary.geojson')
   })
   .catch(err => console.error('Could not load data/caba_boundary.geojson', err));
 
-// Streets are drawn as two aligned layers: a thin VISIBLE line (so the
-// basemap's own street-name labels underneath stay legible) and an
-// invisible, much wider HIT line on top that actually catches clicks/hover
-// - a line a couple of pixels wide is a frustrating click target otherwise.
+// Streets are two aligned layers: a thin visible line (keeps the basemap's
+// own street labels legible) and an invisible, wider hit line on top for
+// easier clicking/hover.
 function streetStyleForZoom(zoom) {
   if (zoom >= 16) return { color: '#b5471b', weight: 2, opacity: 0.8 };
   if (zoom >= 14) return { color: '#b5471b', weight: 1.5, opacity: 0.7 };
@@ -218,12 +207,9 @@ function addStreetFeature(feature) {
 }
 map.on('zoomend', () => streetVisible.eachLayer(l => l.setStyle(streetStyleForZoom(map.getZoom()))));
 
-// At a whole-city zoom, thousands of thin streets packed a few pixels apart
-// are nearly impossible to click accurately and just clutter the view -
-// clicking should reliably mean "this barrio" (or a park) at that scale.
-// Below this zoom streets are hidden entirely (not just non-interactive) -
-// a line that looks clickable but isn't is worse than not showing it -
-// restored once zoomed in enough to tell individual streets apart.
+// Below this zoom, streets are hidden entirely (thousands of them a few
+// pixels apart aren't clickable anyway) so clicking reliably hits a barrio
+// or park instead; restored once zoomed in enough to tell streets apart.
 const STREET_INTERACTIVE_MIN_ZOOM = 15;
 function updateStreetVisibility() {
   const shouldShow = map.getZoom() >= STREET_INTERACTIVE_MIN_ZOOM;
@@ -239,9 +225,7 @@ const parkLayer = L.geoJSON(null, {
   onEachFeature: onEachFeature
 });
 
-// Barrios: a light, always-visible tint so the neighborhood's full extent
-// reads at a glance, brightening further on hover/click so the selected
-// barrio is unmistakable.
+// Barrios: light always-on tint, brightening on hover/click.
 const BARRIO_STYLE = { color: '#7a6a9c', weight: 1.5, dashArray: '5,4', fillColor: '#7a6a9c', fillOpacity: 0.08 };
 const BARRIO_HOVER_STYLE = { ...BARRIO_STYLE, weight: 2.5, fillOpacity: 0.3 };
 const BARRIO_SELECTED_STYLE = { ...BARRIO_STYLE, weight: 2.5, fillOpacity: 0.45 };
@@ -261,18 +245,20 @@ function escapeHtml(s) {
 }
 
 function popupHtml(props) {
+  const legal = props.legal_ref
+    ? `<div class="popup-legal">${escapeHtml(props.legal_ref)}</div>`
+    : '';
   return `<div class="popup-name">${escapeHtml(props.name)}</div>
     <div class="popup-type">${escapeHtml(props.feature_types)}</div>
     <div class="popup-detail">${escapeHtml(props.detail_text)}</div>
+    ${legal}
     <div class="popup-page">Piñeiro (2008), p. ${escapeHtml(String(props.source_page))}</div>`;
 }
 
-// A feature's bounding-box center (what map.getBounds().getCenter() gives
-// you) is not necessarily anywhere near the feature itself - a long,
-// curving avenue like Juan B. Justo (200+ segments zig-zagging ~10km) can
-// easily have its bbox center fall blocks away from the nearest point the
-// street actually passes through. This instead returns a point that is
-// genuinely part of the geometry, for anchoring the search result popup.
+// A bounding-box center can land far from the actual feature (a long,
+// curving avenue's bbox center may not be on the street at all) - this
+// returns a point that's genuinely part of the geometry instead, for
+// anchoring the search result popup.
 function representativePoint(feature) {
   const g = feature.geometry;
   if (g.type === 'MultiLineString' || g.type === 'LineString') {

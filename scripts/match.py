@@ -17,9 +17,8 @@ DATA = ROOT / "data"
 
 ARTICLES = {"EL", "LA", "LOS", "LAS", "DEL", "DE"}
 
-# Rank/profession honorifics that often prefix a person's name in the book's
-# entry ("BUSTILLO, GENERAL JOSÉ MARÍA") but are usually dropped from the
-# actual street name in OSM ("José María Bustillo").
+# Rank/profession honorifics the book prefixes to a name ("BUSTILLO, GENERAL
+# JOSÉ MARÍA") that OSM usually drops ("José María Bustillo").
 HONORIFICS = {
     "DOCTOR", "DOCTORA", "DR", "GENERAL", "CORONEL", "COMODORO", "ALMIRANTE",
     "VICEALMIRANTE", "CONTRAALMIRANTE", "PRESIDENTE", "VICEPRESIDENTE",
@@ -46,11 +45,7 @@ PARK_TYPES = {
     "parque deportivo municipal", "patio de recreación", "patio recreativo",
     "paseo peatonal", "plazoleta y paseo peatonal", "sector parque",
     "paseo/espigón",
-    # bare "paseo" is ambiguous in the book - sometimes a paved street-like
-    # promenade (also in STREET_TYPES), sometimes a park-like green paseo
-    # (e.g. OSM's "Jardín Paseo de la Chacarita de los Colegiales", leisure=
-    # park) - try both layers rather than guessing which one it is.
-    "paseo",
+    "paseo",  # ambiguous: also in STREET_TYPES, tried against both layers
 }
 BARRIO_TYPES = {"barrio"}
 
@@ -73,12 +68,9 @@ def strip_leading_articles(s: str) -> str:
     return " ".join(words)
 
 
-# Argentine OSM mappers routinely fold the feature class into the `name` tag
-# itself ("Plaza Doctor Amadeo Sabattini", "Avenida Jujuy") rather than
-# keeping it in a separate tag. Book entries never carry that word (or, for
-# streets, sometimes do via our own AVENIDA/PASAJE/AUTOPISTA candidates) so
-# OSM names need it strippable too, along with any honorific buried after it
-# ("Doctor", "General", ...).
+# OSM often folds the feature class into the name tag itself ("Plaza Doctor
+# Amadeo Sabattini", "Avenida Jujuy") - strippable, along with any honorific
+# buried after it.
 STREET_CLASS_WORDS = {"AVENIDA", "AV", "PASAJE", "PJE", "AUTOPISTA", "CALLE", "DIAGONAL"}
 PARK_CLASS_WORDS = {
     "PLAZA", "PLAZOLETA", "PARQUE", "PASEO", "JARDIN", "JARDINES", "ESPACIO",
@@ -99,9 +91,8 @@ def clean_name(name: str, class_words) -> str:
 
 
 def index_key_variants(name: str, class_words):
-    """All normalized forms of an OSM name worth indexing: as-is, with
-    leading articles dropped, and aggressively cleaned (leading class word +
-    honorifics anywhere stripped)."""
+    """Normalized forms of an OSM name worth indexing: as-is, articles
+    dropped, and fully cleaned (class word + honorifics stripped)."""
     n = normalize(name)
     variants = {n, strip_leading_articles(n)}
     cleaned = clean_name(name, class_words)
@@ -131,9 +122,7 @@ def candidates_for_book_name(raw_name: str):
             cands.append(f"{right_stripped} {left_n}".strip())
     cands.append(strip_leading_articles(base))
     cands.append(strip_honorifics(base))
-    # Argentine OSM mappers often fold the road class into the name tag
-    # itself ("Avenida Jujuy" rather than just "Jujuy") - try that too.
-    for prefix in ("AVENIDA", "PASAJE", "AUTOPISTA"):
+    for prefix in ("AVENIDA", "PASAJE", "AUTOPISTA"):  # OSM folds these into the name
         cands.append(f"{prefix} {base}")
         cands.append(f"{prefix} {strip_leading_articles(base)}")
     seen, out = set(), []
@@ -141,25 +130,19 @@ def candidates_for_book_name(raw_name: str):
         if c and c not in seen:
             seen.add(c)
             out.append(c)
-    # Anchor is a *single* word required to survive in a fuzzy match (the
-    # surname, or its last word for compound surnames like "Montes de Oca" -
-    # kwords are individual tokens, so a multi-word anchor could never match).
+    # Anchor: a single word (surname, or last word of a compound one) that
+    # must survive in a fuzzy match - kwords are individual tokens.
     anchor_phrase = left_n or base
     anchor = anchor_phrase.split()[-1] if anchor_phrase else ""
     return out, anchor
 
 
 def with_type_hint(candidates, type_label):
-    """Candidates prefixed with *this specific* type word ("jardín
-    botánico" vs "parque"), tried BEFORE the type-agnostic ones - needed
-    when a row names two genuinely different physical features that both
-    fall in the same layer, like "THAYS, CARLOS (jardín botánico;
-    parque)": Jardín Botánico Carlos Thays and Parque Carlos Thays are
-    different places in OSM. The exact-match check tries candidates in
-    order and stops at the first hit, so if the type-agnostic "Carlos
-    Thays" came first (it's already an exact hit, for the *other* Thays
-    park's cleaned name) it would win regardless of which type we're
-    actually looking for - the type-specific form has to be tried first."""
+    """Candidates prefixed with this specific type word, tried before the
+    type-agnostic ones - needed when a row names two different physical
+    features in the same layer (e.g. "jardín botánico" vs "parque"), so the
+    exact-match check doesn't just keep landing on whichever one the
+    generic candidate happens to hit first."""
     prefix = normalize(type_label)
     if not prefix:
         return candidates
@@ -207,11 +190,7 @@ def load_json(name):
 def build_street_index():
     raw = load_json("osm_streets_raw.json")
     idx = defaultdict(list)  # normalized name -> list of [[lon,lat],...]
-    # registry: one entry per *real* OSM name (a multi-segment street shares
-    # one entry across all its ways) - used to tell "this surname is
-    # genuinely unique" apart from "this surname's *index key* is unique",
-    # which isn't the same thing once one name expands into 2-3 keys.
-    registry = {}
+    registry = {}  # one entry per real OSM name, vs. idx's expanded keys
     for el in raw["elements"]:
         if el["type"] != "way" or "geometry" not in el:
             continue
@@ -317,12 +296,9 @@ NAME_BEFORE_PAREN_RE = re.compile(r'([A-ZÁÉÍÓÚÑÜ][\w.À-ſ]*(?:\s+[A-ZÁ�
 
 
 def story_name_words(detail_text: str):
-    """The book's biography almost always reads '<legal citation>. <Full
-    Name> (birth-death), profession...' - pull the capitalized run right
-    before that first parenthesis as the person's actual name, to
-    cross-check against a candidate OSM match (catches e.g. a book bio for
-    "Leonardo Rosales" almost matching an unrelated "Vicente Pérez
-    Rosales" street just because both end in "Rosales")."""
+    """Pull the capitalized name right before "(birth-death)" in the
+    biography, to cross-check a candidate match against the actual person
+    named, not just a shared surname."""
     m = NAME_BEFORE_PAREN_RE.search(detail_text)
     if not m:
         return set()
@@ -330,37 +306,27 @@ def story_name_words(detail_text: str):
 
 
 def find_match(candidates, anchor, index, index_keys_words, registry, cutoff=0.90, dice_cutoff=0.75, story_words=None, base=None):
-    # `base` is the fullest *type-agnostic* candidate (all given-name words
-    # present, nothing truncated) - used below wherever "the whole name" is
-    # needed. Defaults to candidates[0], but callers that put a type-hinted
-    # candidate first (see with_type_hint) must pass the real one
-    # explicitly, or a leaked "jardín botánico" would show up as a
-    # contradicting "extra word" in the uniqueness check.
+    # `base` is the fullest type-agnostic candidate - defaults to
+    # candidates[0], but a caller using with_type_hint must pass the real
+    # one, or the type hint would look like a contradicting extra word.
     if base is None:
         base = candidates[0]
-    # If the book gives more than a bare surname (a real given name, not
-    # just an honorific - "Saavedra, Mariano" has one, "Seeber, Intendente"
-    # doesn't once "Intendente" is stripped), the bare-surname candidate
-    # ("SAAVEDRA" alone) must not be allowed to win a blind exact match:
-    # "Parque Saavedra" cleans down to exactly "SAAVEDRA" with no given
-    # name of its own, and that's a real, different park (Cornelio de
-    # Saavedra's, not his son Mariano's) - only the fuzzy/unique-surname
-    # tiers below actually check whether a given name agrees or
-    # contradicts, so a bare-word candidate is only safe to exact-match
-    # when the book didn't have a given name to discard in the first place.
+    # A bare-surname candidate must never win a match (exact or fuzzy) when
+    # the book gives a real given name: "Parque Saavedra" cleans down to
+    # just "SAAVEDRA" with no given name of its own, so nothing would catch
+    # "Saavedra, Mariano" wrongly grabbing Cornelio de Saavedra's park.
     book_extra = set(strip_honorifics(base).split()) - {anchor}
     for c in candidates:
         if book_extra and c == anchor:
             continue
         if c in index:
             return c, "exact"
-    # Token-set fuzzy fallback: best Dice-coefficient match across all
-    # candidates, required to also contain the entry's most distinctive
-    # word (its surname/first significant word) to avoid false positives.
+    # Token-set fuzzy fallback: best Dice score across all candidates,
+    # required to share the entry's most distinctive word.
     best_key, best_score, best_words = None, 0.0, None
     for c in candidates:
         if book_extra and c == anchor:
-            continue  # same reasoning as the exact-match skip above
+            continue
         words = set(c.split())
         if not words:
             continue
@@ -372,50 +338,32 @@ def find_match(candidates, anchor, index, index_keys_words, registry, cutoff=0.9
                 best_score, best_key, best_words = score, key, words
     if best_key and best_score >= dice_cutoff:
         return best_key, "fuzzy"
-    # A bare surname ("VIEYTES", no given name in the book entry at all) can
-    # safely match a fuller OSM name ("Hipólito Vieytes") *if* that surname
-    # is unique across the whole index - no other street/plaza shares it.
-    # This is intentionally narrower than just "surname is unique": if the
-    # book candidate carries other words (a given name) that contradict the
-    # unique hit's remaining words ("Juan" vs the indexed "Manuel Gálvez"),
-    # that's almost certainly a *different* person of the same surname, so
-    # it's rejected rather than guessed - wrong-but-confident is worse than
-    # unmatched for a project about getting the history right.
-    #
-    # Uniqueness is checked against `registry` (one entry per real OSM
-    # name), not the expanded `index` keys - a single name like "Plaza
-    # Intendente Francisco Seeber" legitimately produces 2-3 index key
-    # variants (raw, cleaned, ...) that all contain "Seeber"; that's one
-    # feature, not multiple, and must count as unique.
+    # A bare surname with no given name at all ("VIEYTES") can still match a
+    # fuller OSM name ("Hipólito Vieytes") if that surname is unique across
+    # the whole index - checked against `registry` (one entry per real OSM
+    # name) rather than `index`'s expanded keys, since one name can produce
+    # several key variants that would otherwise look like several holders.
+    # If the book candidate carries a given name that contradicts the
+    # unique hit's own words, it's rejected as a different person rather
+    # than guessed - wrong-but-confident is worse than unmatched here.
     if anchor:
         holders = [rep for rep, words in registry.items() if anchor in words]
         if len(holders) == 1:
             key = holders[0]
             key_extra = registry[key] - {anchor}
-            # Use the fullest candidate (all given-name words present, none
-            # truncated away) - checking a truncated candidate here would
-            # let a name like "Gálvez, Juan" slip through on its bare-
-            # surname candidate alone, defeating the whole safety check.
-            # Honorifics are stripped here too: they were already stripped
-            # from the OSM side (key_extra), so an untouched "Intendente"
-            # left in cand_extra would never find anything to agree with
-            # and wrongly read as a contradiction.
             cand_extra = set(strip_honorifics(base).split()) - {anchor}
             header_ok = all(any(words_compatible(w, kw) for kw in key_extra) for w in cand_extra)
-            # When the header itself is a bare surname (cand_extra empty,
-            # so header_ok is only vacuously true), that's not real
-            # evidence - fall back to the biography's own name mention, if
-            # any, and require it to actually agree with the OSM name's
-            # other words rather than just not-contradict them.
             if header_ok and cand_extra:
                 return key, "fuzzy-unique-surname"
+            # Header alone is a bare surname (header_ok only vacuously
+            # true) - fall back to the biography's own name mention and
+            # require it to actually agree, not just not-contradict.
             if header_ok and not cand_extra:
                 story_extra = (story_words or set()) - {anchor}
                 if not story_extra or (key_extra and any(
                     any(words_compatible(w, kw) for kw in key_extra) for w in story_extra
                 )):
                     return key, "fuzzy-unique-surname"
-    # last resort: plain character-sequence fuzzy match (catches near-typos)
     close = get_close_matches(base, list(index.keys()), n=1, cutoff=cutoff)
     if close:
         return close[0], "fuzzy-char"
@@ -445,37 +393,45 @@ def main():
             continue
         candidates, anchor = candidates_for_book_name(r["name"])
 
-        # A row can carry types spanning more than one physical feature - the
-        # book's "CHACABUCO (calle; parque)" is both a street AND the park
-        # that gave the surrounding barrio its name, and "THAYS, CARLOS
-        # (jardín botánico; parque)" covers two *different* parks (Jardín
-        # Botánico Carlos Thays and Parque Carlos Thays are separate OSM
-        # features). So: try every type against every layer it could belong
-        # to, with a type-specific candidate so "jardín botánico" and
-        # "parque" don't just both find the same nearest match, and dedupe
-        # only when two types genuinely resolve to the same feature (e.g.
-        # "calle; avenida" naming one street two ways).
+        # A row's types can span more than one physical feature (a calle and
+        # the parque sharing its name; two different parks with the same
+        # honoree). Try every type against every layer it could belong to,
+        # with a type-specific candidate, then dedupe only when two types
+        # resolve to the same feature.
         story_words = story_name_words(r["detail_text"])
-        seen = {}  # (kind, key) -> method
+        seen = {}  # (kind, key) -> {"method": ..., "types": {contributing types}}
         for t in types:
             if t in STREET_TYPES or t not in (PARK_TYPES | BARRIO_TYPES):
                 cands = with_type_hint(candidates, t)
                 key, method = find_match(cands, anchor, street_idx, street_words, street_registry, story_words=story_words, base=candidates[0])
                 if key:
-                    seen.setdefault(("street", key), method)
+                    seen.setdefault(("street", key), {"method": method, "types": set()})["types"].add(t)
             if t in PARK_TYPES:
                 cands = with_type_hint(candidates, t)
                 key, method = find_match(cands, anchor, park_idx, park_words, park_registry, story_words=story_words, base=candidates[0])
                 if key:
-                    seen.setdefault(("park", key), method)
+                    seen.setdefault(("park", key), {"method": method, "types": set()})["types"].add(t)
             if t in BARRIO_TYPES:
                 cands = with_type_hint(candidates, t)
                 key, method = find_match(cands, anchor, barrio_idx, barrio_words, barrio_registry, cutoff=0.93, story_words=story_words, base=candidates[0])
                 if key:
-                    seen.setdefault(("barrio", key), method)
+                    seen.setdefault(("barrio", key), {"method": method, "types": set()})["types"].add(t)
+
+        # A "cantero central" (traffic median) match is usually just the
+        # same avenue found again via a different index key - redundant if
+        # another street type in this row already matched.
+        street_kind_keys = [key for kind, key in seen if kind == "street"]
+        has_non_cantero_street = any(
+            not seen[("street", k)]["types"] <= {"cantero central"} for k in street_kind_keys
+        )
+        if has_non_cantero_street:
+            for k in street_kind_keys:
+                if seen[("street", k)]["types"] <= {"cantero central"}:
+                    del seen[("street", k)]
 
         row_matches = []
-        for (kind, key), method in seen.items():
+        for (kind, key), info in seen.items():
+            method = info["method"]
             if kind == "street":
                 geom = {"type": "MultiLineString", "coordinates": street_idx[key]}
             elif kind == "park":
@@ -496,6 +452,7 @@ def main():
                         "feature_types": r["feature_types"],
                         "kind": kind,
                         "detail_text": r["detail_text"],
+                        "legal_ref": r["legal_ref"],
                         "source_page": r["source_page"],
                     },
                 })
@@ -507,7 +464,7 @@ def main():
     (DATA / "matched.geojson").write_text(json.dumps(geojson, ensure_ascii=False), encoding="utf-8")
 
     with open(DATA / "unmatched.csv", "w", encoding="utf-8-sig", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=["name", "feature_types", "detail_text", "see_also", "source_page"])
+        w = csv.DictWriter(f, fieldnames=["name", "feature_types", "legal_ref", "detail_text", "see_also", "source_page"])
         w.writeheader()
         for r in unmatched:
             w.writerow(r)
@@ -515,7 +472,7 @@ def main():
     geocodable_rows = sum(1 for r in rows if not r["see_also"] and r["feature_types"].strip())
     matched_rows = geocodable_rows - match_stats["unmatched"]
     print(f"\nGeocodable rows: {geocodable_rows}  (matched: {matched_rows}, unmatched: {match_stats['unmatched']})")
-    print(f"Features written (some rows produce 2+, e.g. a calle *and* a parque sharing one name):")
+    print("Features written (some rows produce 2+):")
     for k, v in sorted(match_stats.items(), key=lambda kv: -kv[1]):
         print(f"  {v:5d}  {k}")
     print(f"\nMatch rate: {matched_rows / geocodable_rows * 100:.1f}%")
