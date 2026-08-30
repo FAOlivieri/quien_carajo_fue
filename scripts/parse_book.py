@@ -63,7 +63,7 @@ def find_headers(joined):
             last_end = m.end()
     return out
 VEASE_RE = re.compile(
-    r'^\s*([' + NAME_CHARS + r'][' + NAME_CHARS + r' ,\.\'º°/&\-]{0,90}?)'
+    r'^\s*([' + NAME_CHARS + r'][' + NAME_CHARS + r' ,\.\'“”º°/&\-]{0,90}?)'
     r'\s+[Vv][eé]ase\s+(.+?)\.?\s*$'
 )
 FOOTNOTE_RE = re.compile(r'(?<=[a-záéíóúñü\)])\.(\d{1,3})(?=\s|$)')
