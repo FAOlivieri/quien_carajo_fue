@@ -190,6 +190,7 @@ def load_json(name):
 def build_street_index():
     raw = load_json("osm_streets_raw.json")
     idx = defaultdict(list)  # normalized name -> list of [[lon,lat],...]
+    raw_idx = defaultdict(list)  # literal OSM name (no class-word folding) -> coords
     registry = {}  # one entry per real OSM name, vs. idx's expanded keys
     for el in raw["elements"]:
         if el["type"] != "way" or "geometry" not in el:
@@ -202,9 +203,11 @@ def build_street_index():
             continue
         for key in index_key_variants(name, STREET_CLASS_WORDS):
             idx[key].append(coords)
+        n = normalize(name)
+        raw_idx[n].append(coords)
         rep = clean_name(name, STREET_CLASS_WORDS) or normalize(name)
         registry.setdefault(rep, set(rep.split()))
-    return idx, registry
+    return idx, raw_idx, registry
 
 
 def build_park_index():
@@ -370,9 +373,22 @@ def find_match(candidates, anchor, index, index_keys_words, registry, cutoff=0.9
     return None, None
 
 
+def load_match_overrides():
+    """A few OSM names collide after class-word stripping ("San Martín" the
+    calle vs. "Avenida San Martín", a different street) and would otherwise
+    get merged into one match. Fixed by hand: pin the book row to the exact
+    OSM name it should use, no folding."""
+    path = DATA / "match_overrides.csv"
+    if not path.exists():
+        return {}
+    with path.open(encoding="utf-8-sig", newline="") as f:
+        return {(r["name"], r["feature_types"]): r["osm_name"] for r in csv.DictReader(f)}
+
+
 def main():
     rows = list(csv.DictReader(open(DATA / "entries.csv", encoding="utf-8-sig")))
-    street_idx, street_registry = build_street_index()
+    street_idx, raw_street_idx, street_registry = build_street_index()
+    match_overrides = load_match_overrides()
     park_idx, park_registry = build_park_index()
     barrio_idx, barrio_registry = build_barrio_index()
     print(f"OSM street names: {len(street_registry)}, park/plaza names: {len(park_registry)}, barrios: {len(barrio_registry)}")
@@ -400,7 +416,17 @@ def main():
         # resolve to the same feature.
         story_words = story_name_words(r["detail_text"])
         seen = {}  # (kind, key) -> {"method": ..., "types": {contributing types}}
+        override_osm_name = match_overrides.get((r["name"], r["feature_types"]))
+        street_types_done = set()
+        if override_osm_name:
+            key = normalize(override_osm_name)
+            coords = raw_street_idx.get(key) or raw_street_idx.get(strip_leading_articles(key))
+            if coords:
+                street_types_done = {t for t in types if t in STREET_TYPES or t not in (PARK_TYPES | BARRIO_TYPES)}
+                seen[("street", key)] = {"method": "override", "types": set(street_types_done)}
         for t in types:
+            if t in street_types_done:
+                continue
             if t in STREET_TYPES or t not in (PARK_TYPES | BARRIO_TYPES):
                 cands = with_type_hint(candidates, t)
                 key, method = find_match(cands, anchor, street_idx, street_words, street_registry, story_words=story_words, base=candidates[0])
@@ -433,7 +459,8 @@ def main():
         for (kind, key), info in seen.items():
             method = info["method"]
             if kind == "street":
-                geom = {"type": "MultiLineString", "coordinates": street_idx[key]}
+                coords = raw_street_idx[key] if method == "override" else street_idx[key]
+                geom = {"type": "MultiLineString", "coordinates": coords}
             elif kind == "park":
                 coords = [ring for group in park_idx[key] for ring in group]
                 geom = {"type": "MultiPolygon", "coordinates": [[ring] for ring in coords]}

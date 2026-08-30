@@ -16,8 +16,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 RAW_TXT = ROOT / "data" / "raw_text.txt"
-OUT_CSV = ROOT / "data" / "entries.csv"
+OUT_CSV = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "data" / "entries.csv"
 OUT_UNPARSED = ROOT / "data" / "unparsed_blocks.txt"
+OVERRIDES_CSV = ROOT / "data" / "overrides.csv"
 
 # Running header/footer lines that repeat on every page - capture the page
 # number as we go, then drop the line from the content stream.
@@ -33,10 +34,13 @@ STOP_MARKERS = [
 
 NAME_CHARS = r"A-ZÁÉÍÓÚÑÜ0-9´’"
 # A header segment: NAME (tipo). - tipo must be lowercase so this can't
-# match an inline "(1900-1954)" birth-death parenthetical instead.
+# match an inline "(1900-1954)" birth-death parenthetical instead. Curly
+# quotes are allowed in the name for quoted nicknames ("ERNESTO “CHE”").
+# A few headers use a comma instead of the period after "(tipo)" (a book
+# typo), so both are accepted.
 HEADER_SEG_RE = re.compile(
-    r'([' + NAME_CHARS + r'][' + NAME_CHARS + r' ,\.\'º°/&\-]{0,90}?)'
-    r'\s*\(([a-záéíóúñü][a-záéíóúñü \-/]{1,58})\)\.\s*'
+    r'([' + NAME_CHARS + r'][' + NAME_CHARS + r' ,\.\'“”º°/&\-]{0,90}?)'
+    r'\s*\(([a-záéíóúñü][a-záéíóúñü \-/]{1,58})\)[.,]\s*'
 )
 
 
@@ -82,8 +86,17 @@ BIO_START_RE = re.compile(
 DEFINITION_START_RE = re.compile(r"^[A-ZÁÉÍÓÚÑÜ][^:]{0,80}:\s")
 
 
+def is_narrative_start(s):
+    return bool(BIO_START_RE.search(s) or DEFINITION_START_RE.match(s))
+
+
 def is_legal_sentence(s):
-    if BIO_START_RE.search(s) or DEFINITION_START_RE.match(s):
+    """Fallback only (see split_legal_and_narrative): a sentence with no
+    legal keyword isn't necessarily narrative - it can be an aside inside a
+    still-ongoing citation (a map's multi-clause title, a closing remark
+    tied to the decree). Used only when nothing in the remaining text
+    matches a recognized narrative opening."""
+    if is_narrative_start(s):
         return False
     return bool(LEGAL_MENTION_RE.search(s))
 
@@ -277,6 +290,40 @@ def resplit_embedded_headers(rows):
     return out
 
 
+def load_overrides():
+    """A few entries have a legal citation that reads as narrative (or a
+    narrative that reads as citation) in a way no lexical rule can tell
+    apart from the ordinary case without breaking it elsewhere. Rather than
+    special-case the parser, fix these by hand here - keyed by (name,
+    feature_types) so a future re-parse still finds and fixes them."""
+    if not OVERRIDES_CSV.exists():
+        return {}
+    with OVERRIDES_CSV.open(encoding="utf-8-sig", newline="") as f:
+        return {(r["name"], r["feature_types"]): r for r in csv.DictReader(f)}
+
+
+def apply_overrides(rows):
+    overrides = load_overrides()
+    if not overrides:
+        return rows
+    seen = set()
+    for r in rows:
+        key = (r["name"], r["feature_types"])
+        if key in overrides:
+            o = overrides[key]
+            r["legal_ref"] = o["legal_ref"]
+            r["detail_text"] = o["detail_text"]
+            seen.add(key)
+    stale = overrides.keys() - seen
+    if stale:
+        print(f"\nWARNING: {len(stale)} override(s) didn't match any parsed row"
+              " (name/feature_types may have changed upstream):")
+        for name, types in sorted(stale):
+            print(f"  {name!r} / {types!r}")
+    print(f"Overrides applied: {len(seen)}/{len(overrides)}")
+    return rows
+
+
 def parse_block(page, joined):
     """Try to parse one joined block string into one or more (name, types,
     legal_ref, detail_text, see_also) rows. Returns (rows, ok) where
@@ -356,6 +403,7 @@ def main():
             unparsed.append((page, joined))
 
     rows = resplit_embedded_headers(rows)
+    rows = apply_overrides(rows)
 
     OUT_CSV.parent.mkdir(parents=True, exist_ok=True)
     with OUT_CSV.open("w", encoding="utf-8-sig", newline="") as f:

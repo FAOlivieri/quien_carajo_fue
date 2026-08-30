@@ -355,7 +355,7 @@ input.addEventListener('input', () => {
   if (!matches.length) { resultsBox.style.display = 'none'; return; }
   for (const f of matches) {
     const row = document.createElement('div');
-    row.innerHTML = `${escapeHtml(f.properties.name)}<span class="kind">${escapeHtml(f.properties.kind)}</span>`;
+    row.innerHTML = `${escapeHtml(f.properties.name)}<span class="kind">${escapeHtml(f.properties.feature_types)}</span>`;
     row.addEventListener('click', () => {
       const layer = L.geoJSON(f);
       map.fitBounds(layer.getBounds(), { maxZoom: 17 });

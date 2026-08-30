@@ -49,15 +49,22 @@ python scripts/build_boundary.py   # -> data/caba_boundary.geojson
 its own legal citation, followed by one shared story for all of them (e.g.
 a barrio and a paseo of a different name, both explained by the same
 etymology). The parser accumulates locations until it hits an actual
-narrative sentence, then shares that story back across all of them. ~2,800
-entries recovered from the dictionary body (pp. ~26–450).
+narrative sentence, then shares that story back across all of them. A
+handful of entries phrase their citation or story in a way no lexical rule
+can tell apart from the ordinary case without breaking other entries -
+these are corrected by hand in `data/overrides.csv` (keyed by name +
+feature_types), applied after parsing so they survive a full re-parse.
+~2,800 entries recovered from the dictionary body (pp. ~26–450).
 
 **`match.py`**: matches names to OSM geometry — normalizing accents/case,
 un-inverting "Apellido, Nombre" ordering, stripping honorifics, handling
 Argentine OSM's habit of folding the feature class into the name ("Avenida
 Jujuy"), and a fuzzy fallback with several safety checks against attaching
-the wrong person's biography to a place. Match rate: **~91%** (2,586
-features from 2,729 geocodable rows).
+the wrong person's biography to a place. That folding can also wrongly
+merge two different streets that share a bare name ("San Martín" the calle
+vs. the unrelated "Avenida San Martín") - fixed by hand in
+`data/match_overrides.csv`. Match rate: **~91%** (2,588 features from
+2,737 geocodable rows).
 
 ## Known limitations
 
