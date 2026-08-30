@@ -77,6 +77,11 @@ LEGAL_KEYWORDS = (
     r'Disposici[oó]n(?:es)?|Planos?|BM|BO|BB\.MM)'
 )
 LEGAL_MENTION_RE = re.compile(rf'\b{LEGAL_KEYWORDS}\b|N[°º]', re.IGNORECASE)
+# A standalone parenthetical citing the archive holding the original
+# document ("(Archivo Histórico Municipal, Legajo 3, 1882. Obras
+# Públicas).") - no legal keyword of its own, but always a citation aside
+# tacked onto the sentence before it, never a narrative in its own right.
+ARCHIVE_CITATION_RE = re.compile(r'^\(.*\b(?:Archivo|Legajo)\b.*\)\.?$', re.IGNORECASE)
 # Exceptions: a biography can mention a law in passing while describing the
 # person's career, and a definition can mention its subject's founding
 # decree. Both are narrative regardless of what they go on to mention.
@@ -91,14 +96,12 @@ def is_narrative_start(s):
 
 
 def is_legal_sentence(s):
-    """Fallback only (see split_legal_and_narrative): a sentence with no
-    legal keyword isn't necessarily narrative - it can be an aside inside a
-    still-ongoing citation (a map's multi-clause title, a closing remark
-    tied to the decree). Used only when nothing in the remaining text
-    matches a recognized narrative opening."""
+    """A sentence with no legal keyword isn't necessarily narrative - it can
+    be an aside inside a still-ongoing citation (a map's multi-clause
+    title, an archive reference tied to the decree)."""
     if is_narrative_start(s):
         return False
-    return bool(LEGAL_MENTION_RE.search(s))
+    return bool(LEGAL_MENTION_RE.search(s) or ARCHIVE_CITATION_RE.match(s))
 
 
 SENTENCE_BREAK_RE = re.compile(r'(?<=[.!?])\s+')
