@@ -404,7 +404,8 @@ def main():
     for r in rows:
         if r["see_also"]:
             continue  # redirects carry no geometry of their own
-        types = [t.strip().lower() for t in r["feature_types"].split(";") if t.strip()]
+        orig_types = [t.strip() for t in r["feature_types"].split(";") if t.strip()]
+        types = [t.lower() for t in orig_types]
         if not types:
             continue
         candidates, anchor = candidates_for_book_name(r["name"])
@@ -458,6 +459,12 @@ def main():
         row_matches = []
         for (kind, key), info in seen.items():
             method = info["method"]
+            # Only the type(s) that actually resolved to this geometry, in
+            # their original book casing/order - not the row's full type
+            # list, or a calle+plaza row would show "calle; plaza" on both
+            # the street feature and the park feature instead of just its
+            # own type.
+            my_types = "; ".join(orig_types[i] for i, t in enumerate(types) if t in info["types"])
             if kind == "street":
                 coords = raw_street_idx[key] if method == "override" else street_idx[key]
                 geom = {"type": "MultiLineString", "coordinates": coords}
@@ -466,17 +473,17 @@ def main():
                 geom = {"type": "MultiPolygon", "coordinates": [[ring] for ring in coords]}
             else:
                 geom = {"type": "MultiPolygon", "coordinates": [[ring] for ring in barrio_idx[key]]}
-            row_matches.append((kind, method, geom))
+            row_matches.append((kind, method, geom, my_types))
 
         if row_matches:
-            for kind, method, geom in row_matches:
+            for kind, method, geom, my_types in row_matches:
                 match_stats[f"{kind}:{method}"] += 1
                 features.append({
                     "type": "Feature",
                     "geometry": geom,
                     "properties": {
                         "name": r["name"],
-                        "feature_types": r["feature_types"],
+                        "feature_types": my_types,
                         "kind": kind,
                         "detail_text": r["detail_text"],
                         "legal_ref": r["legal_ref"],
