@@ -376,13 +376,16 @@ def find_match(candidates, anchor, index, index_keys_words, registry, cutoff=0.9
 def load_match_overrides():
     """A few OSM names collide after class-word stripping ("San Martín" the
     calle vs. "Avenida San Martín", a different street) and would otherwise
-    get merged into one match. Fixed by hand: pin the book row to the exact
-    OSM name it should use, no folding."""
+    get merged into one match. Fixed by hand: pin one type of the book row
+    to the exact OSM name it should use, no folding. Keyed by (name,
+    feature_types, type) since a row can have another type (an "autopista"
+    alongside the "calle") that already resolves correctly on its own and
+    must be left alone."""
     path = DATA / "match_overrides.csv"
     if not path.exists():
         return {}
     with path.open(encoding="utf-8-sig", newline="") as f:
-        return {(r["name"], r["feature_types"]): r["osm_name"] for r in csv.DictReader(f)}
+        return {(r["name"], r["feature_types"], r["type"]): r["osm_name"] for r in csv.DictReader(f)}
 
 
 def main():
@@ -417,14 +420,15 @@ def main():
         # resolve to the same feature.
         story_words = story_name_words(r["detail_text"])
         seen = {}  # (kind, key) -> {"method": ..., "types": {contributing types}}
-        override_osm_name = match_overrides.get((r["name"], r["feature_types"]))
         street_types_done = set()
-        if override_osm_name:
-            key = normalize(override_osm_name)
-            coords = raw_street_idx.get(key) or raw_street_idx.get(strip_leading_articles(key))
-            if coords:
-                street_types_done = {t for t in types if t in STREET_TYPES or t not in (PARK_TYPES | BARRIO_TYPES)}
-                seen[("street", key)] = {"method": "override", "types": set(street_types_done)}
+        for t in types:
+            override_osm_name = match_overrides.get((r["name"], r["feature_types"], t))
+            if override_osm_name:
+                key = normalize(override_osm_name)
+                coords = raw_street_idx.get(key) or raw_street_idx.get(strip_leading_articles(key))
+                if coords:
+                    seen.setdefault(("street", key), {"method": "override", "types": set()})["types"].add(t)
+                    street_types_done.add(t)
         for t in types:
             if t in street_types_done:
                 continue

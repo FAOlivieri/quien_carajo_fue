@@ -1,2 +1,3 @@
-name,feature_types,osm_name
-"SAN MARTÍN",calle,San Martín
+name,feature_types,type,osm_name
+"SAN MARTÍN",calle,calle,San Martín
+25 DE MAYO,autopista; calle,calle,25 de Mayo
