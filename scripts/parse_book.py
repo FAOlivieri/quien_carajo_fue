@@ -104,7 +104,9 @@ def is_legal_sentence(s):
     return bool(LEGAL_MENTION_RE.search(s) or ARCHIVE_CITATION_RE.match(s))
 
 
-SENTENCE_BREAK_RE = re.compile(r'(?<=[.!?])\s+')
+# A closing parenthesis right after the period ("Obras Públicas.)") hides
+# the sentence end from the plain look-behind, so it's allowed too.
+SENTENCE_BREAK_RE = re.compile(r'(?<=[.!?])\s+|(?<=[.!?]\))\s+')
 # Title abbreviations ending in a period ("Dr.", "Gral.") that aren't a
 # sentence end; a single-letter initial ("Juan A. Ambrosetti") is the same
 # problem but checked separately since it can be any letter.
@@ -327,6 +329,22 @@ def apply_overrides(rows):
     return rows
 
 
+def block_ends_open(joined):
+    """True if this block is a valid entry whose last header has no
+    narrative of its own yet - a citation-only header (or run of them)
+    whose shared story is likely the next block over, split off by a stray
+    page-boundary blank line (e.g. a running footer/header line between
+    them). The caller merges this block with the next one and re-checks,
+    so the story is found regardless of how many pages it takes."""
+    if VEASE_RE.match(joined):
+        return False
+    header_matches = find_headers(joined)
+    if not header_matches or header_matches[0].start() != 0:
+        return False
+    _, narrative = split_legal_and_narrative(joined[header_matches[-1].end():])
+    return not narrative
+
+
 def parse_block(page, joined):
     """Try to parse one joined block string into one or more (name, types,
     legal_ref, detail_text, see_also) rows. Returns (rows, ok) where
@@ -361,6 +379,20 @@ def main():
     unparsed = []
     last_row_idx = None
     in_notes = False
+    carry_page, carry_joined = None, None
+
+    def flush_carry():
+        nonlocal carry_page, carry_joined, last_row_idx
+        if carry_joined is None:
+            return
+        parsed_rows, ok = parse_block(carry_page, carry_joined)
+        if ok:
+            rows.extend(parsed_rows)
+            last_row_idx = len(rows) - 1
+        else:
+            unparsed.append((carry_page, carry_joined))
+        carry_page, carry_joined = None, None
+
     for page, block_lines in blocks:
         joined = dehyphenate_join(block_lines)
         joined = clean_text(joined)
@@ -368,14 +400,17 @@ def main():
             continue
 
         if joined == "Bibliografía":
+            flush_carry()
             break  # everything from here on is back matter
 
         if SECTION_LETTER_RE.match(joined):
+            flush_carry()
             last_row_idx = None
             in_notes = False
             continue
 
         if joined.lower() == "notas":
+            flush_carry()
             in_notes = True
             last_row_idx = None
             continue
@@ -391,6 +426,13 @@ def main():
                 continue
             in_notes = False  # a real entry resumed
         else:
+            if carry_joined is not None:
+                joined = carry_joined + " " + joined
+                page = carry_page
+                carry_page, carry_joined = None, None
+            if block_ends_open(joined):
+                carry_page, carry_joined = page, joined
+                continue
             parsed_rows, ok = parse_block(page, joined)
 
         if ok:
@@ -404,6 +446,8 @@ def main():
             )
         else:
             unparsed.append((page, joined))
+
+    flush_carry()  # document ended (or hit a stop marker) with one still open
 
     rows = resplit_embedded_headers(rows)
     rows = apply_overrides(rows)
